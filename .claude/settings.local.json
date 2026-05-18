@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pdal --version)",
+      "PowerShell(node --version)",
+      "PowerShell(pdal --version 2>&1)",
+      "PowerShell(python --version 2>&1)",
+      "Bash(npx next *)"
+    ]
+  }
+}

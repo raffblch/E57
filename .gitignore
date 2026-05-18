@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.env*.local
+
+# Local data and converted point clouds
+data/scans.json
+public/pointclouds/*
+!public/pointclouds/.gitkeep
+public/potree/
+tmp/
+
+.DS_Store

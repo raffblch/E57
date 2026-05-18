@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Potree Viewer</title>
+
+    <link rel="stylesheet" type="text/css" href="build/potree/potree.css" />
+    <link rel="stylesheet" type="text/css" href="libs/jquery-ui/jquery-ui.min.css" />
+    <link rel="stylesheet" type="text/css" href="libs/openlayers3/ol.css" />
+    <link rel="stylesheet" type="text/css" href="libs/spectrum/spectrum.css" />
+    <link rel="stylesheet" type="text/css" href="libs/jstree/themes/mixed/style.css" />
+
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }
+      #potree_render_area {
+        background-image: linear-gradient(160deg, #0b0f17 0%, #1a2233 60%, #0b0f17 100%) !important;
+      }
+      #compare_overlay {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15, 20, 30, 0.85);
+        color: #e5e7eb;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        z-index: 1000;
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        display: none;
+      }
+      #compare_overlay .row { display: flex; align-items: center; gap: 12px; }
+      #compare_overlay label { font-size: 11px; opacity: 0.7; }
+      #compare_overlay input[type=range] { width: 260px; }
+      #load_error {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        background: rgba(60, 10, 10, 0.9); color: #fee2e2; padding: 16px 20px;
+        border-radius: 8px; max-width: 560px; font: 13px/1.4 monospace;
+        display: none; z-index: 2000; border: 1px solid rgba(255,255,255,0.1);
+      }
+    </style>
+  </head>
+  <body>
+    <script src="libs/jquery/jquery-3.1.1.min.js"></script>
+    <script src="libs/spectrum/spectrum.js"></script>
+    <script src="libs/jquery-ui/jquery-ui.min.js"></script>
+    <script src="libs/other/BinaryHeap.js"></script>
+    <script src="libs/tween/tween.min.js"></script>
+    <script src="libs/d3/d3.js"></script>
+    <script src="libs/proj4/proj4.js"></script>
+    <script src="libs/openlayers3/ol.js"></script>
+    <script src="libs/i18next/i18next.js"></script>
+    <script src="libs/jstree/jstree.js"></script>
+    <script src="build/potree/potree.js"></script>
+    <script src="libs/plasio/js/laslaz.js"></script>
+
+    <div class="potree_container" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0;">
+      <div id="potree_render_area"></div>
+      <div id="potree_sidebar_container"></div>
+    </div>
+
+    <div id="compare_overlay">
+      <div class="row">
+        <label>Scan A</label>
+        <input type="range" id="compare_slider" min="0" max="100" value="50" />
+        <label>Scan B</label>
+      </div>
+    </div>
+
+    <div id="load_error"></div>
+
+    <script>
+      (function () {
+        const qp = new URLSearchParams(window.location.search);
+        const fileUrl = qp.get('file');
+        const name = qp.get('name') || 'Scan';
+        const compareFile = qp.get('compareFile');
+
+        if (!fileUrl) {
+          showError('Missing ?file= query parameter');
+          return;
+        }
+
+        window.viewer = new Potree.Viewer(document.getElementById('potree_render_area'));
+        viewer.setEDLEnabled(true);
+        viewer.setFOV(60);
+        viewer.setPointBudget(2_000_000);
+        viewer.setBackground('gradient');
+        viewer.loadSettingsFromURL();
+
+        viewer.loadGUI(() => {
+          viewer.setLanguage('en');
+          $('#menu_appearance').next().show();
+          $('#menu_tools').next().show();
+          $('#menu_scene').next().show();
+          $('#menu_measurements').next().show();
+        });
+
+        const loaded = [];
+
+        loadCloud(fileUrl, name, (pc) => {
+          loaded.push({ key: 'A', pointcloud: pc });
+          if (!compareFile) viewer.fitToScreen();
+          maybeWireCompare();
+        });
+
+        if (compareFile) {
+          loadCloud(compareFile, name + ' (B)', (pc) => {
+            loaded.push({ key: 'B', pointcloud: pc });
+            viewer.fitToScreen();
+            maybeWireCompare();
+          });
+        }
+
+        function loadCloud(url, label, onReady) {
+          // Potree.loadPointCloud accepts a direct .copc.laz URL on Potree 1.8+.
+          // It also accepts a cloud.js / ept.json URL.
+          Potree.loadPointCloud(url, label, (e) => {
+            if (!e || !e.pointcloud) {
+              showError(
+                'Failed to load point cloud: ' + url + '\n\n' +
+                'If this is a .copc.laz file and Potree reports it as unsupported, your staged Potree build may pre-date COPC support. ' +
+                'Re-run `npm run setup` to refresh, or replace public/potree/ with a Potree build that supports COPC.'
+              );
+              return;
+            }
+            viewer.scene.addPointCloud(e.pointcloud);
+            const mat = e.pointcloud.material;
+            mat.size = 1.0;
+            mat.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+            onReady(e.pointcloud);
+          });
+        }
+
+        function maybeWireCompare() {
+          if (!compareFile || loaded.length < 2) return;
+          const a = loaded.find((l) => l.key === 'A').pointcloud;
+          const b = loaded.find((l) => l.key === 'B').pointcloud;
+          const overlay = document.getElementById('compare_overlay');
+          const slider = document.getElementById('compare_slider');
+          overlay.style.display = 'block';
+
+          function apply(v) {
+            // v: 0..100. 0 = only A, 100 = only B, 50 = both at 0.5.
+            const t = v / 100;
+            const aOpacity = 1 - t;
+            const bOpacity = t;
+            setOpacity(a, aOpacity);
+            setOpacity(b, bOpacity);
+          }
+          slider.addEventListener('input', (e) => apply(parseInt(e.target.value, 10)));
+          apply(50);
+        }
+
+        function setOpacity(pc, opacity) {
+          const mat = pc.material;
+          mat.opacity = opacity;
+          mat.transparent = opacity < 1;
+          mat.needsUpdate = true;
+          pc.visible = opacity > 0.01;
+        }
+
+        function showError(msg) {
+          const el = document.getElementById('load_error');
+          el.textContent = msg;
+          el.style.display = 'block';
+        }
+      })();
+    </script>
+  </body>
+</html>
